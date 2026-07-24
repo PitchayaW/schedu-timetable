@@ -1,7 +1,6 @@
-# SCHEDULAB
+# SCHEDU
 
-เว็บแอปจัดตารางเรียน–ตารางสอนสำหรับสาขาวิชา ใช้ Streamlit และ Google OR-Tools
-โดยไม่ต้องล็อกอินผ่าน ChatGPT และไม่เรียก ChatGPT API
+เว็บแอปจัดตารางเรียน–ตารางสอนสำหรับสาขาวิชา ใช้ Streamlit และ Google OR-Tools 
 
 ## ข้อมูลนำเข้า
 
