@@ -234,14 +234,38 @@ def render_schedule(
     parameters: ScheduleParameters,
 ) -> None:
     st.markdown("### ผลการจัดตาราง")
-    columns = st.columns(4)
+    columns = st.columns(5)
     columns[0].metric("สถานะ", result.status)
     columns[1].metric("จัดได้", f"{len(result.assignments):,} คาบ")
     columns[2].metric("ยังไม่จัด", f"{len(result.unassigned):,} คาบ")
-    columns[3].metric("Preference เฉลี่ย", f"{result.average_preference:.2f}")
+    columns[3].metric("ตัวเลือกตำแหน่ง", f"{result.candidate_count:,}")
+    columns[4].metric("Preference เฉลี่ย", f"{result.average_preference:.2f}")
+    st.caption(
+        "ตัวเลือกตำแหน่ง = ผลรวมตำแหน่งวัน–เวลา–ห้องที่ผ่านข้อจำกัดเบื้องต้น "
+        "สำหรับทุกคาบที่ยังไม่ล็อกเวลา ไม่ใช่จำนวนตารางสมบูรณ์ทั้งหมด"
+    )
 
     if result.assignments.empty:
         st.error("ยังไม่มีตารางที่แสดงได้ โปรดดูคำแนะนำในแท็บ Diagnostics")
+        if not result.unassigned.empty:
+            st.markdown("#### วิเคราะห์คาบที่ยังไม่ได้จัด")
+            html_table(
+                result.unassigned.rename(
+                    columns={
+                        "feasible_options": "ตัวเลือกที่ผ่านเบื้องต้น",
+                        "blocking_constraints": "ข้อจำกัดที่ขวาง",
+                    }
+                )
+            )
+        if not result.option_summary.empty:
+            with st.expander("จำนวนตัวเลือกต่อคาบ"):
+                html_table(
+                    result.option_summary.rename(
+                        columns={"feasible_options": "ตัวเลือกที่ผ่านเบื้องต้น"}
+                    )
+                )
+        for message in result.diagnostics:
+            st.write(f"• {message}")
     else:
         tab_group, tab_teacher, tab_room, tab_rows, tab_diag = st.tabs(
             ["กลุ่มนักศึกษา", "อาจารย์", "ห้องเรียน", "รายการทั้งหมด", "Diagnostics"]
@@ -266,9 +290,33 @@ def render_schedule(
                 )
             )
             if not result.unassigned.empty:
-                st.markdown("#### คาบที่ยังไม่ได้จัด")
-                html_table(result.unassigned)
+                st.markdown("#### วิเคราะห์คาบที่ยังไม่ได้จัด")
+                html_table(
+                    result.unassigned.rename(
+                        columns={
+                            "feasible_options": "ตัวเลือกที่ผ่านเบื้องต้น",
+                            "blocking_constraints": "ข้อจำกัดที่ขวาง",
+                        }
+                    )
+                )
         with tab_diag:
+            if not result.option_summary.empty:
+                st.markdown("#### จำนวนตัวเลือกต่อคาบ")
+                html_table(
+                    result.option_summary.rename(
+                        columns={"feasible_options": "ตัวเลือกที่ผ่านเบื้องต้น"}
+                    )
+                )
+            if not result.unassigned.empty:
+                st.markdown("#### ข้อจำกัดที่ขวางคาบซึ่งยังไม่ได้จัด")
+                html_table(
+                    result.unassigned.rename(
+                        columns={
+                            "feasible_options": "ตัวเลือกที่ผ่านเบื้องต้น",
+                            "blocking_constraints": "ข้อจำกัดที่ขวาง",
+                        }
+                    )
+                )
             for message in result.diagnostics:
                 st.write(f"• {message}")
 
