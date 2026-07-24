@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from time import perf_counter
 
 import pandas as pd
@@ -20,12 +20,23 @@ from .time_utils import (
     time_label,
 )
 
-def _empty_result(status: str, diagnostics: list[str]) -> ScheduleResult:
+def _empty_result(
+    status: str,
+    diagnostics: list[str],
+    *,
+    candidate_count: int = 0,
+    option_summary: pd.DataFrame | None = None,
+    unassigned: pd.DataFrame | None = None,
+) -> ScheduleResult:
     return ScheduleResult(
         status=status,
         assignments=pd.DataFrame(),
-        unassigned=pd.DataFrame(),
+        unassigned=unassigned if unassigned is not None else pd.DataFrame(),
+        option_summary=(
+            option_summary if option_summary is not None else pd.DataFrame()
+        ),
         diagnostics=diagnostics,
+        candidate_count=candidate_count,
     )
 
 
@@ -42,6 +53,132 @@ def _preference(
         for slot in range(start, start + duration)
     ]
     return min(scores) if scores else 1.0
+
+
+def _overlaps(left: dict, right: dict) -> bool:
+    return (
+        left["day"] == right["day"]
+        and left["start"] < right["start"] + right["duration"]
+        and right["start"] < left["start"] + left["duration"]
+    )
+
+
+def _candidate_blockers(
+    candidate: dict,
+    scheduled_rows: list[dict],
+    parameters: ScheduleParameters,
+    teacher_busy: dict[str, set[tuple[int, int]]],
+    group_busy: dict[str, set[tuple[int, int]]],
+    teacher_fixed_course_days: dict[tuple[str, int], set[str]],
+    group_limits: dict[str, int],
+) -> set[str]:
+    reasons: set[str] = set()
+    day = candidate["day"]
+    duration = candidate["duration"]
+    flexible_rows = [row for row in scheduled_rows if not row.get("locked", False)]
+
+    for row in scheduled_rows:
+        if _overlaps(candidate, row):
+            if (
+                candidate["room"] == row["room"]
+                and candidate["room"] != "กำหนดภายหลัง"
+            ):
+                reasons.add("ห้องชนกับคาบที่จัดแล้ว")
+            if set(candidate["teachers"]) & set(row["teachers"]):
+                reasons.add("อาจารย์สอนชนกัน")
+            if set(candidate["groups"]) & set(row["groups"]):
+                reasons.add("กลุ่มนักศึกษาเรียนชนกัน")
+
+        if row["course_key"] != candidate["course_key"]:
+            continue
+        if row["day"] == day:
+            reasons.add("วิชาเดียวกันเกิน 1 คาบในวันเดียว")
+        if parameters.avoid_consecutive_days and abs(row["day"] - day) == 1:
+            reasons.add("วิชาเดียวกันอยู่ในวันติดกัน")
+
+    max_teacher_slots = round(parameters.max_teaching_hours_per_day * 2)
+    for teacher in candidate["teachers"]:
+        fixed_slots = len({slot for fixed_day, slot in teacher_busy[teacher] if fixed_day == day})
+        scheduled_slots = sum(
+            row["duration"]
+            for row in flexible_rows
+            if row["day"] == day and teacher in row["teachers"]
+        )
+        if fixed_slots + scheduled_slots + duration > max_teacher_slots:
+            reasons.add("ชั่วโมงสอนของอาจารย์ต่อวันเกินกำหนด")
+
+        fixed_courses = teacher_fixed_course_days[(teacher, day)]
+        scheduled_courses = {
+            row["course_key"]
+            for row in flexible_rows
+            if row["day"] == day and teacher in row["teachers"]
+        }
+        new_course = 0 if candidate["course_key"] in scheduled_courses else 1
+        if (
+            len(fixed_courses) + len(scheduled_courses) + new_course
+            > parameters.max_courses_per_teacher_per_day
+        ):
+            reasons.add("จำนวนวิชาของอาจารย์ต่อวันเกินกำหนด")
+
+    default_group_limit = round(parameters.max_study_hours_per_day * 2)
+    for group in candidate["groups"]:
+        fixed_slots = len({slot for fixed_day, slot in group_busy[group] if fixed_day == day})
+        scheduled_slots = sum(
+            row["duration"]
+            for row in flexible_rows
+            if row["day"] == day and group in row["groups"]
+        )
+        limit = min(group_limits.get(group, default_group_limit), default_group_limit)
+        if fixed_slots + scheduled_slots + duration > limit:
+            reasons.add("ชั่วโมงเรียนของกลุ่มต่อวันเกินกำหนด")
+
+    if duration > round(parameters.max_course_hours_per_day * 2):
+        reasons.add("ชั่วโมงของวิชาเดียวกันต่อวันเกินกำหนด")
+    return reasons
+
+
+def _format_rejection_reasons(reason_counts: Counter[str]) -> str:
+    if not reason_counts:
+        return "ไม่พบตำแหน่งที่ผ่านข้อจำกัดเบื้องต้น"
+    return " / ".join(
+        f"{reason} ({count:,} ตำแหน่ง)"
+        for reason, count in reason_counts.most_common(3)
+    )
+
+
+def _minimum_blocker_summary(
+    candidates: list[dict],
+    scheduled_rows: list[dict],
+    parameters: ScheduleParameters,
+    teacher_busy: dict[str, set[tuple[int, int]]],
+    group_busy: dict[str, set[tuple[int, int]]],
+    teacher_fixed_course_days: dict[tuple[str, int], set[str]],
+    group_limits: dict[str, int],
+    status: str,
+) -> str:
+    best_size: int | None = None
+    best_reasons: Counter[str] = Counter()
+    for candidate in candidates:
+        reasons = _candidate_blockers(
+            candidate,
+            scheduled_rows,
+            parameters,
+            teacher_busy,
+            group_busy,
+            teacher_fixed_course_days,
+            group_limits,
+        )
+        if best_size is None or len(reasons) < best_size:
+            best_size = len(reasons)
+            best_reasons = Counter(reasons)
+        elif len(reasons) == best_size:
+            best_reasons.update(reasons)
+
+    if best_size == 0:
+        if status == "FEASIBLE":
+            return "หมดเวลาค้นหาก่อนพิสูจน์ว่าจัดได้ครบทุกคาบ"
+        return "ต้องสลับคาบอื่นพร้อมกันหลายรายการจึงจะเพิ่มคาบนี้ได้"
+    return " / ".join(reason for reason, _ in best_reasons.most_common(3))
 
 
 def solve_schedule(
@@ -156,26 +293,33 @@ def solve_schedule(
     teacher_course_day: dict[tuple[str, str, int], list[cp_model.IntVar]] = defaultdict(list)
     objective_terms: list[cp_model.LinearExpr] = []
     placed_vars: dict[int, cp_model.IntVar] = {}
+    rejection_counts: dict[int, Counter[str]] = defaultdict(Counter)
 
     for session_index, session in enumerate(sessions):
         duration = session["duration"]
-        is_graduate = any("โท" in group or "master" in group.lower() for group in session["groups"])
+        is_graduate = any(
+            "โท" in group or "master" in group.lower()
+            for group in session["groups"]
+        )
         for room in room_records:
-            if room["type"] != session["room_type"] or room["capacity"] < session["capacity"]:
-                continue
-            if room["graduate_only"] and not is_graduate:
-                continue
             for day in range(5):
                 for start in range(0, len(TIMES) - duration + 1):
+                    rejection_reasons: set[str] = set()
+                    if room["type"] != session["room_type"]:
+                        rejection_reasons.add("ประเภทห้องไม่ตรง")
+                    if room["capacity"] < session["capacity"]:
+                        rejection_reasons.add("ความจุห้องไม่พอ")
+                    if room["graduate_only"] and not is_graduate:
+                        rejection_reasons.add("ห้องสงวนสำหรับบัณฑิตศึกษา")
                     if start < 8 < start + duration:
-                        continue
+                        rejection_reasons.add("คาบเรียนคร่อมช่วงพักกลางวัน")
                     covered = {(day, slot) for slot in range(start, start + duration)}
                     if covered & room["busy"]:
-                        continue
+                        rejection_reasons.add("ห้องไม่พร้อมใช้งาน")
                     if any(covered & teacher_busy[teacher] for teacher in session["teachers"]):
-                        continue
+                        rejection_reasons.add("อาจารย์ติดคาบที่ล็อกไว้")
                     if any(covered & group_busy[group] for group in session["groups"]):
-                        continue
+                        rejection_reasons.add("กลุ่มนักศึกษาติดคาบที่ล็อกไว้")
                     pref = _preference(
                         bundle.preferences,
                         session["teachers"],
@@ -184,6 +328,9 @@ def solve_schedule(
                         duration,
                     )
                     if parameters.strict_zero_preference and pref <= 0:
+                        rejection_reasons.add("Preference = 0")
+                    if rejection_reasons:
+                        rejection_counts[session_index].update(rejection_reasons)
                         continue
                     key = (session_index, room["room_index"], day, start)
                     variable = model.new_bool_var(
@@ -233,8 +380,10 @@ def solve_schedule(
                 "INFEASIBLE",
                 [
                     f"ไม่พบตัวเลือกที่เป็นไปได้สำหรับ {session['course_id']} "
-                    f"ครั้งที่ {session['session_index'] + 1}; ตรวจห้อง ความจุ และเวลาว่าง"
+                    f"ครั้งที่ {session['session_index'] + 1}: "
+                    f"{_format_rejection_reasons(rejection_counts[session_index])}"
                 ],
+                candidate_count=len(candidates),
             )
         if parameters.allow_unassigned:
             placed = model.new_bool_var(f"placed_{session_index}")
@@ -335,6 +484,7 @@ def solve_schedule(
                 "ไม่พบตารางภายใต้พารามิเตอร์ปัจจุบัน",
                 "ลองเปิด allow unassigned เพิ่มชั่วโมงสูงสุด หรือผ่อนเงื่อนไขคะแนน 0",
             ],
+            candidate_count=len(candidates),
         )
 
     rows = list(fixed_assignments)
@@ -372,18 +522,55 @@ def solve_schedule(
             ["day_index", "start_slot", "room", "course_id"]
         ).reset_index(drop=True)
 
-    unassigned_rows = [
-        {
-            "course_id": session["course_id"],
-            "course_name": session["course_name"],
-            "section": session["section"],
-            "session": session["session_index"] + 1,
-            "duration_hours": session["duration"] / 2,
-            "reason": "ตัวเลือกที่ดีที่สุดยังละเมิดข้อจำกัดบางข้อ",
-        }
-        for index, session in enumerate(sessions)
-        if index not in assigned_session_indices
-    ]
+    candidates_by_session: dict[int, list[dict]] = defaultdict(list)
+    for key, metadata in candidate_metadata.items():
+        candidates_by_session[key[0]].append(metadata)
+
+    option_rows = []
+    unassigned_rows = []
+    for index, session in enumerate(sessions):
+        feasible_options = len(candidates_by_session[index])
+        is_assigned = index in assigned_session_indices
+        option_rows.append(
+            {
+                "course_id": session["course_id"],
+                "course_name": session["course_name"],
+                "section": session["section"],
+                "session": session["session_index"] + 1,
+                "duration_hours": session["duration"] / 2,
+                "feasible_options": feasible_options,
+                "status": "จัดแล้ว" if is_assigned else "ยังไม่จัด",
+            }
+        )
+        if is_assigned:
+            continue
+        if feasible_options == 0:
+            blocking_constraints = _format_rejection_reasons(
+                rejection_counts[index]
+            )
+        else:
+            blocking_constraints = _minimum_blocker_summary(
+                candidates_by_session[index],
+                rows,
+                parameters,
+                teacher_busy,
+                group_busy,
+                teacher_fixed_course_days,
+                group_limits,
+                status,
+            )
+        unassigned_rows.append(
+            {
+                "course_id": session["course_id"],
+                "course_name": session["course_name"],
+                "section": session["section"],
+                "session": session["session_index"] + 1,
+                "duration_hours": session["duration"] / 2,
+                "feasible_options": feasible_options,
+                "blocking_constraints": blocking_constraints,
+            }
+        )
+    option_summary = pd.DataFrame(option_rows)
     unassigned = pd.DataFrame(unassigned_rows)
     average_preference = (
         float(assignments.loc[~assignments["locked"], "preference"].mean())
@@ -392,7 +579,9 @@ def solve_schedule(
     )
     diagnostics = [
         f"สถานะตัวแก้ปัญหา: {status}",
-        f"สร้างตัวเลือก {len(candidates):,} ตัวเลือกสำหรับ {len(sessions):,} ช่วงเรียน",
+        f"สร้างตัวเลือกตำแหน่งวัน–เวลา–ห้อง {len(candidates):,} ตัวเลือก "
+        f"สำหรับ {len(sessions):,} คาบที่ยังไม่ล็อกเวลา",
+        "จำนวนนี้เป็นตำแหน่งที่ผ่านข้อจำกัดเบื้องต้น ไม่ใช่จำนวนตารางสมบูรณ์ทั้งหมด",
         f"ใช้เวลาคำนวณ {solver.wall_time:.2f} วินาที",
     ]
     if not unassigned.empty:
@@ -403,7 +592,9 @@ def solve_schedule(
         status=status,
         assignments=assignments,
         unassigned=unassigned,
+        option_summary=option_summary,
         diagnostics=diagnostics,
+        candidate_count=len(candidates),
         objective_value=solver.objective_value,
         wall_time_seconds=perf_counter() - started,
         average_preference=average_preference,

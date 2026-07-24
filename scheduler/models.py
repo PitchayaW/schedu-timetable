@@ -26,7 +26,9 @@ class ScheduleResult:
     status: str
     assignments: pd.DataFrame
     unassigned: pd.DataFrame
+    option_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     diagnostics: list[str] = field(default_factory=list)
+    candidate_count: int = 0
     objective_value: float = 0.0
     wall_time_seconds: float = 0.0
     average_preference: float = 0.0

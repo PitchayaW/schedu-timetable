@@ -20,6 +20,7 @@ def schedule_excel_bytes(
                 ["solver_status", result.status],
                 ["assigned_sessions", len(result.assignments)],
                 ["unassigned_sessions", len(result.unassigned)],
+                ["candidate_placements", result.candidate_count],
                 ["average_preference", result.average_preference],
                 ["wall_time_seconds", result.wall_time_seconds],
                 ["max_teaching_hours_per_day", parameters.max_teaching_hours_per_day],
@@ -39,6 +40,7 @@ def schedule_excel_bytes(
             columns=["day_index", "start_slot"], errors="ignore"
         ).to_excel(writer, sheet_name="schedule", index=False)
         result.unassigned.to_excel(writer, sheet_name="unassigned", index=False)
+        result.option_summary.to_excel(writer, sheet_name="options", index=False)
         pd.DataFrame({"diagnostic": result.diagnostics}).to_excel(
             writer, sheet_name="diagnostics", index=False
         )
@@ -58,6 +60,7 @@ def schedule_excel_bytes(
             ("summary", summary),
             ("schedule", result.assignments.drop(columns=["day_index", "start_slot"], errors="ignore")),
             ("unassigned", result.unassigned),
+            ("options", result.option_summary),
             ("diagnostics", pd.DataFrame({"diagnostic": result.diagnostics})),
         ]:
             worksheet = writer.sheets[sheet_name]
