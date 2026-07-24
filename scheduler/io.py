@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -78,7 +79,6 @@ class InputBundle:
     rooms: pd.DataFrame
     student_groups: pd.DataFrame
     preferences: dict[str, dict[tuple[int, int], float]] = field(default_factory=dict)
-    exceptions: pd.DataFrame = field(default_factory=pd.DataFrame)
     messages: list[ValidationMessage] = field(default_factory=list)
     source_format: str = "canonical"
 
@@ -276,6 +276,54 @@ def _validate(bundle: InputBundle) -> None:
             )
         )
 
+    session_values = bundle.department_courses["session_hours"].apply(
+        lambda value: (
+            [float(value)]
+            if isinstance(value, (int, float)) and pd.notna(value)
+            else [
+                float(item)
+                for item in re.findall(r"\d+(?:\.\d+)?", str(value or ""))
+            ]
+        )
+    )
+    missing_sessions = session_values.apply(len).eq(0)
+    if missing_sessions.any():
+        bundle.messages.append(
+            ValidationMessage(
+                "error",
+                "department_courses",
+                "ต้องระบุ session_hours ให้ครบทุกวิชา",
+            )
+        )
+    unequal_sessions = session_values.apply(
+        lambda values: bool(values)
+        and (
+            any(value <= 0 for value in values)
+            or any(abs(value - values[0]) > 1e-9 for value in values[1:])
+        )
+    )
+    if unequal_sessions.any():
+        bundle.messages.append(
+            ValidationMessage(
+                "error",
+                "department_courses",
+                "session_hours ของแต่ละวิชาต้องเป็นค่าบวกและยาวเท่ากันทุกครั้ง",
+            )
+        )
+
+    missing_course_groups = (
+        bundle.department_courses["student_groups"].fillna("").astype(str).str.strip()
+        == ""
+    )
+    if missing_course_groups.any():
+        bundle.messages.append(
+            ValidationMessage(
+                "error",
+                "department_courses",
+                "ต้องระบุกลุ่มนักศึกษาทุกสาขา/ชั้นปีที่จะเรียนแต่ละวิชา",
+            )
+        )
+
     known_groups = set(bundle.student_groups["group_id"].astype(str).str.strip())
     course_groups = {
         group.strip()
@@ -335,30 +383,3 @@ def load_preferences(source: str | Path | bytes | BinaryIO) -> dict[str, dict[tu
                     preferences[teacher][(day, slot)] = float(value)
                 slot += 1
     return preferences
-
-
-def load_exception_workbook(source: str | Path | bytes | BinaryIO) -> pd.DataFrame:
-    sheets = pd.read_excel(
-        _source_for_pandas(source), sheet_name=None, engine="openpyxl"
-    )
-    frame = sheets.get("Re", next(iter(sheets.values()))).copy()
-    column_map = {
-        "รหัสนักศึกษา": "student_id",
-        "ชื่อ-สกุล": "student_name",
-        "Column1": "group_id",
-        "CourseID": "course_id",
-        "วิชาที่แจ้งสับหลีก": "course_name",
-    }
-    frame = frame.rename(columns=column_map)
-    for column in ["student_id", "student_name", "group_id", "course_id", "course_name"]:
-        if column not in frame:
-            frame[column] = ""
-    result = frame[
-        ["student_id", "student_name", "group_id", "course_id", "course_name"]
-    ].copy()
-    result["student_id"] = result["student_id"].fillna("").astype(str).str.strip()
-    result["student_name"] = result["student_name"].fillna("").astype(str).str.strip()
-    result["group_id"] = result["group_id"].fillna("").astype(str).str.strip()
-    result["course_id"] = result["course_id"].fillna("").astype(str).str.strip()
-    result["_course_key"] = result["course_id"].map(normalize_course_id)
-    return result[result["_course_key"] != ""].reset_index(drop=True)

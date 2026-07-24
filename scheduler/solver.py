@@ -135,7 +135,6 @@ def solve_schedule(
                 teacher_fixed_course_days[(teacher, day)].add(key)
 
     group_busy: dict[str, set[tuple[int, int]]] = defaultdict(set)
-    fixed_course_blocks: dict[str, set[tuple[int, int]]] = defaultdict(set)
     for _, row in bundle.student_courses.iterrows():
         blocks = parse_fixed_time(row.get("fixed_time"))
         if not blocks:
@@ -143,17 +142,6 @@ def solve_schedule(
         group = str(row.get("group_id", "")).strip()
         busy = occupied_slots(blocks)
         group_busy[group].update(busy)
-        fixed_course_blocks[normalize_course_id(row.get("course_id"))].update(busy)
-
-    exception_course_sets: dict[str, set[str]] = defaultdict(set)
-    exception_fixed_busy: dict[str, set[tuple[int, int]]] = defaultdict(set)
-    if not bundle.exceptions.empty:
-        for _, row in bundle.exceptions.iterrows():
-            person = str(row.get("student_id") or row.get("student_name") or "").strip()
-            course_id = normalize_course_id(row.get("course_id"))
-            if person and course_id:
-                exception_course_sets[person].add(course_id)
-                exception_fixed_busy[person].update(fixed_course_blocks.get(course_id, set()))
 
     model = cp_model.CpModel()
     candidates: dict[tuple[int, int, int, int], cp_model.IntVar] = {}
@@ -166,7 +154,6 @@ def solve_schedule(
     teacher_day_duration: dict[tuple[str, int], list[tuple[cp_model.IntVar, int]]] = defaultdict(list)
     group_day_duration: dict[tuple[str, int], list[tuple[cp_model.IntVar, int]]] = defaultdict(list)
     teacher_course_day: dict[tuple[str, str, int], list[cp_model.IntVar]] = defaultdict(list)
-    exception_slot_vars: dict[tuple[str, int, int], list[cp_model.IntVar]] = defaultdict(list)
     objective_terms: list[cp_model.LinearExpr] = []
     placed_vars: dict[int, cp_model.IntVar] = {}
 
@@ -198,18 +185,6 @@ def solve_schedule(
                     )
                     if parameters.strict_zero_preference and pref <= 0:
                         continue
-                    session_course_id = normalize_course_id(session["course_id"])
-                    blocked_for_exception = False
-                    for person, course_set in exception_course_sets.items():
-                        if (
-                            session_course_id in course_set
-                            and covered & exception_fixed_busy[person]
-                        ):
-                            blocked_for_exception = True
-                            break
-                    if blocked_for_exception:
-                        continue
-
                     key = (session_index, room["room_index"], day, start)
                     variable = model.new_bool_var(
                         f"x_s{session_index}_r{room['room_index']}_d{day}_t{start}"
@@ -242,9 +217,6 @@ def solve_schedule(
                             teacher_slot_vars[(teacher, day, slot)].append(variable)
                         for group in session["groups"]:
                             group_slot_vars[(group, day, slot)].append(variable)
-                        for person, course_set in exception_course_sets.items():
-                            if session_course_id in course_set:
-                                exception_slot_vars[(person, day, slot)].append(variable)
                     course_day_vars[(session["course_key"], day)].append(variable)
                     for teacher in session["teachers"]:
                         teacher_day_duration[(teacher, day)].append((variable, duration))
@@ -277,8 +249,6 @@ def solve_schedule(
     for variables in teacher_slot_vars.values():
         model.add_at_most_one(variables)
     for variables in group_slot_vars.values():
-        model.add_at_most_one(variables)
-    for variables in exception_slot_vars.values():
         model.add_at_most_one(variables)
     for variables in course_day_vars.values():
         model.add(sum(variables) <= 1)
