@@ -10,7 +10,6 @@ from scheduler.export import schedule_excel_bytes
 from scheduler.io import (
     CANONICAL_SHEETS,
     InputBundle,
-    load_exception_workbook,
     load_main_workbook,
     load_preferences,
 )
@@ -19,10 +18,10 @@ from scheduler.runner import run_solver_isolated
 from scheduler.time_utils import DAY_THAI, TIMES, split_items
 
 APP_DIR = Path(__file__).resolve().parent
-SAMPLE_FILE = APP_DIR / "sample_data" / "SCHEDULAB_input_68_1.xlsx"
+SAMPLE_FILE = APP_DIR / "sample_data" / "SchEDU_input_68_1.xlsx"
 
 st.set_page_config(
-    page_title="SCHEDULAB · University Timetable",
+    page_title="SchEDU · University Timetable",
     page_icon="◫",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -76,7 +75,6 @@ def inject_styles() -> None:
         .status-ok { background: #e9f9ef; color: #176a3a; }
         .status-warn { background: #fff4df; color: #895b08; }
         .status-bad { background: #ffe9e7; color: #9f2e20; }
-        .small-note { color: var(--muted); font-size: .82rem; }
         .stButton > button[kind="primary"] {
           background: var(--accent); border-color: var(--accent); border-radius: 12px;
           min-height: 3rem; font-weight: 750;
@@ -112,18 +110,11 @@ def read_preferences(data: bytes) -> dict[str, dict[tuple[int, int], float]]:
     return load_preferences(data)
 
 
-@st.cache_data(show_spinner=False)
-def read_exceptions(data: bytes) -> pd.DataFrame:
-    return load_exception_workbook(data)
-
-
-def apply_optional_inputs(
+def apply_preference_input(
     bundle: InputBundle,
     preference_data: bytes | None,
-    exception_data: bytes | None,
 ) -> InputBundle:
     bundle.preferences = read_preferences(preference_data) if preference_data else {}
-    bundle.exceptions = read_exceptions(exception_data) if exception_data else pd.DataFrame()
     return bundle
 
 
@@ -173,6 +164,40 @@ def data_overview(bundle: InputBundle) -> None:
                     columns=["_course_key"], errors="ignore"
                 )
                 html_table(frame)
+
+
+def input_data_guide() -> None:
+    with st.expander("คำอธิบาย Input ทั้ง 5 ชีท"):
+        st.markdown(
+            """
+            **`all_courses` — รายวิชาที่เปิดสอนทั้งหมด**  
+            ใช้ตรวจเวลาที่ถูกล็อกไว้แล้วของอาจารย์และกลุ่มนักศึกษา ครอบคลุมทั้ง
+            วิชาที่สาขาจัด วิชาบริการ และวิชาจากหน่วยงานอื่น
+
+            **`department_courses` — รายวิชาที่สาขาต้องการจัดตาราง**  
+            ระบุรหัสวิชา กลุ่มเรียน ผู้สอน จำนวนผู้เรียน ประเภทห้อง และกลุ่มนักศึกษา
+            ทุกสาขา/ชั้นปีที่จะเรียนวิชานั้นใน `student_groups` โดยคั่นหลายกลุ่มด้วย `/`
+            รายชื่อกลุ่มเหล่านี้ต้องเป็นผลที่สรุปแล้วจากการวิเคราะห์การสับหลีก
+
+            **`session_hours` ใน `department_courses`**  
+            กำหนดจำนวนครั้งที่เรียนต่อสัปดาห์และจำนวนชั่วโมงต่อครั้ง โดยทุกครั้งต้อง
+            ยาวเท่ากัน จำนวนค่าคือจำนวนครั้งต่อสัปดาห์ เช่น `1.5,1.5` หมายถึง
+            เรียน 2 ครั้ง ครั้งละ 1.5 ชั่วโมง, `2,2` หมายถึง 2 ครั้ง ครั้งละ
+            2 ชั่วโมง และ `3` หมายถึง 1 ครั้ง ครั้งละ 3 ชั่วโมง
+
+            **`student_courses` — วิชาที่แต่ละกลุ่มนักศึกษาต้องเรียน**  
+            ผู้ใช้ต้องระบุรายวิชาของทุกกลุ่ม/ทุกชั้นปีให้ครบ รวมทั้งวิชานอกสาขาและ
+            เวลาที่ล็อกไว้ เพื่อให้ระบบป้องกันตารางชนกันได้
+
+            **`rooms` — ห้องเรียน**  
+            ระบุชื่อห้อง ความจุ ประเภทห้อง สิทธิ์สำหรับระดับบัณฑิตศึกษา และช่วงเวลา
+            ที่ห้องไม่พร้อมใช้งาน
+
+            **`student_groups` — กลุ่มนักศึกษา**  
+            กำหนดรหัสกลุ่ม สาขา ชั้นปี จำนวนนักศึกษา และชั่วโมงเรียนสูงสุดต่อวัน
+            รหัส `group_id` ต้องตรงกับที่ใช้ในอีกสองชีท
+            """
+        )
 
 
 def timetable_grid(
@@ -251,7 +276,7 @@ def render_schedule(
     st.download_button(
         "ดาวน์โหลดผลลัพธ์ Excel",
         data=export_bytes,
-        file_name="SCHEDULAB_schedule.xlsx",
+        file_name="SchEDU_schedule.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
         width="stretch",
@@ -267,42 +292,85 @@ def sidebar_parameters() -> ScheduleParameters:
         max_value=10.0,
         value=8.0,
         step=0.5,
+        help="ภาระสอนรวมสูงสุดของอาจารย์แต่ละคนในหนึ่งวัน รวมคาบที่ล็อกไว้แล้ว",
     )
+    st.sidebar.caption("จำกัดภาระสอนรวมของอาจารย์แต่ละคนในหนึ่งวัน")
     max_study = st.sidebar.number_input(
         "ชั่วโมงเรียนสูงสุด / กลุ่ม / วัน",
         min_value=1.0,
         max_value=10.0,
         value=8.0,
         step=0.5,
+        help="เพดานชั่วโมงเรียนรวมต่อวันของแต่ละกลุ่มนักศึกษา",
     )
+    st.sidebar.caption("จำกัดชั่วโมงเรียนรวมต่อวันของแต่ละกลุ่มนักศึกษา")
     max_course = st.sidebar.number_input(
         "ชั่วโมงสูงสุดของวิชาเดียวกัน / วัน",
         min_value=1.0,
         max_value=8.0,
         value=6.0,
         step=0.5,
+        help="เพดานชั่วโมงของรายวิชาเดียวกันที่อนุญาตให้เกิดในวันเดียว",
     )
+    st.sidebar.caption("จำกัดชั่วโมงของรายวิชาเดียวกันในวันเดียว")
     max_courses = st.sidebar.number_input(
         "จำนวนวิชาสูงสุด / อาจารย์ / วัน",
         min_value=1,
         max_value=8,
         value=3,
         step=1,
+        help="จำนวนรายวิชาที่แตกต่างกันสูงสุดที่อาจารย์หนึ่งคนสอนได้ในหนึ่งวัน",
     )
+    st.sidebar.caption("จำกัดจำนวนรายวิชาที่ต่างกันของอาจารย์ในหนึ่งวัน")
     st.sidebar.divider()
-    strict_zero = st.sidebar.toggle("ห้ามลงช่วง Preference = 0", value=True)
-    avoid_consecutive = st.sidebar.toggle("หลีกเลี่ยงเรียนวิชาเดิมวันติดกัน", value=True)
-    allow_unassigned = st.sidebar.toggle("ยอมให้บางคาบยังไม่ถูกจัด", value=True)
-    time_limit = st.sidebar.slider("เวลาคำนวณสูงสุด (วินาที)", 10, 180, 45, 5)
+    strict_zero = st.sidebar.toggle(
+        "ห้ามลงช่วง Preference = 0",
+        value=True,
+        help="ถือว่าคะแนน 0 คือช่วงที่อาจารย์ไม่พร้อมสอนและห้ามระบบเลือก",
+    )
+    st.sidebar.caption("คะแนน 0 หมายถึงช่วงที่อาจารย์ไม่พร้อมสอน")
+    avoid_consecutive = st.sidebar.toggle(
+        "หลีกเลี่ยงเรียนวิชาเดิมวันติดกัน",
+        value=True,
+        help="ไม่ให้คาบของรายวิชาเดียวกันเกิดในวันต่อเนื่องกัน",
+    )
+    st.sidebar.caption("กระจายคาบของวิชาเดียวกันไม่ให้ลงวันต่อเนื่อง")
+    allow_unassigned = st.sidebar.toggle(
+        "ยอมให้บางคาบยังไม่ถูกจัด",
+        value=True,
+        help="หากเงื่อนไขแน่นเกินไป ระบบจะแสดงคาบที่ยังจัดไม่ได้แทนการสร้างตารางผิดเงื่อนไข",
+    )
+    st.sidebar.caption("แสดงคาบที่ติดเงื่อนไขแทนการบังคับให้ตารางผิด")
+    time_limit = st.sidebar.slider(
+        "เวลาคำนวณสูงสุด (วินาที)",
+        10,
+        180,
+        45,
+        5,
+        help="เวลาสูงสุดที่ OR-Tools ใช้ค้นหาคำตอบในแต่ละครั้ง",
+    )
+    st.sidebar.caption("เพิ่มเวลาเพื่อเปิดโอกาสให้ระบบค้นหาตารางที่ดีกว่า")
     with st.sidebar.expander("น้ำหนักเป้าหมายขั้นสูง"):
         preference_weight = st.number_input(
-            "Preference", min_value=0, max_value=200, value=75
+            "Preference",
+            min_value=0,
+            max_value=200,
+            value=75,
+            help="ความสำคัญของคะแนนความต้องการเวลาสอนของอาจารย์",
         )
         room_fit_weight = st.number_input(
-            "ความพอดีของห้อง", min_value=0, max_value=100, value=20
+            "ความพอดีของห้อง",
+            min_value=0,
+            max_value=100,
+            value=20,
+            help="ความสำคัญของการเลือกห้องที่ความจุใกล้จำนวนผู้เรียน",
         )
         late_slot_penalty = st.number_input(
-            "โทษคาบเย็น", min_value=0, max_value=100, value=8
+            "โทษคาบเย็น",
+            min_value=0,
+            max_value=100,
+            value=8,
+            help="ค่าปรับสำหรับคาบช่วงท้ายวัน ยิ่งสูงยิ่งหลีกเลี่ยงคาบเย็น",
         )
     return ScheduleParameters(
         max_teaching_hours_per_day=float(max_teach),
@@ -325,7 +393,7 @@ def main() -> None:
     st.markdown(
         """
         <section class="hero">
-          <div class="eyebrow">SCHEDULAB · KKU TIMETABLE STUDIO</div>
+          <div class="eyebrow">SchEDU · KKU TIMETABLE STUDIO</div>
           <h1>จัดตารางที่ตรวจสอบได้<br>พร้อมใช้กับทุกสาขา</h1>
           <p>อัปโหลดข้อมูลมาตรฐาน 5 ชีท กำหนดข้อจำกัด แล้วให้ระบบสร้างตารางโดยคุมอาจารย์ กลุ่มนักศึกษา ห้องเรียน และเวลาชนกันในคราวเดียว</p>
         </section>
@@ -339,7 +407,11 @@ def main() -> None:
         main_file = st.file_uploader(
             "ไฟล์ข้อมูลหลัก (.xlsx)",
             type=["xlsx"],
-            help="รองรับรูปแบบใหม่ 5 ชีท และรูปแบบเดิม teach/study/student/room",
+            help="ไฟล์หลักประกอบด้วย all_courses, department_courses, student_courses, rooms และ student_groups",
+        )
+        st.caption(
+            "ข้อมูลหลัก 5 ชีทสำหรับรายวิชา ผู้เรียน ห้อง และกลุ่มนักศึกษา "
+            "รองรับรูปแบบเดิม teach/study/student/room เพื่อช่วยย้ายข้อมูล"
         )
     with template_column:
         st.markdown('<div class="step"><b>0</b> เริ่มจากตัวอย่าง</div>', unsafe_allow_html=True)
@@ -348,7 +420,7 @@ def main() -> None:
             st.download_button(
                 "ดาวน์โหลดแม่แบบพร้อมข้อมูลตัวอย่าง",
                 data=sample_bytes,
-                file_name="SCHEDULAB_input_template.xlsx",
+                file_name="SchEDU_input_template.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
             )
@@ -356,7 +428,10 @@ def main() -> None:
             "ใช้ข้อมูลตัวอย่างในระบบ",
             value=main_file is None,
             disabled=not sample_bytes,
+            help="เปิดเพื่อทดลองจัดตารางจากข้อมูลตัวอย่างโดยไม่ต้องอัปโหลดไฟล์",
         )
+
+    input_data_guide()
 
     input_bytes = main_file.getvalue() if main_file else (sample_bytes if use_sample else None)
     if input_bytes is None:
@@ -370,28 +445,26 @@ def main() -> None:
     if bundle.has_errors:
         st.stop()
 
-    st.markdown('<div class="step"><b>2</b> เพิ่มเงื่อนไขเสริม</div>', unsafe_allow_html=True)
-    optional_left, optional_right = st.columns(2)
-    with optional_left:
-        preference_file = st.file_uploader(
-            "Preference เวลาสอนของอาจารย์ (ไม่บังคับ)",
-            type=["xlsx"],
-            key="preference_file",
-        )
-    with optional_right:
-        exception_file = st.file_uploader(
-            "รายชื่อแจ้งสับหลีก (ไม่บังคับ)",
-            type=["xlsx"],
-            key="exception_file",
-        )
-    bundle = apply_optional_inputs(
+    st.markdown(
+        '<div class="step"><b>2</b> เพิ่ม Preference เวลาสอน</div>',
+        unsafe_allow_html=True,
+    )
+    preference_file = st.file_uploader(
+        "Preference เวลาสอนของอาจารย์ (ไม่บังคับ)",
+        type=["xlsx"],
+        key="preference_file",
+        help="คะแนนความต้องการของอาจารย์ในแต่ละช่วงเวลา โดย 0 คือไม่พร้อมสอน และคะแนนสูงกว่าคือช่วงที่ต้องการมากกว่า",
+    )
+    st.caption(
+        "ถ้าไม่อัปโหลด ระบบจะใช้คะแนนกลางเท่ากันทุกช่วงเวลา "
+        "ไฟล์นี้ใช้จัดลำดับความเหมาะสมของเวลาและกำหนดช่วงที่อาจารย์ไม่พร้อม"
+    )
+    bundle = apply_preference_input(
         bundle,
         preference_file.getvalue() if preference_file else None,
-        exception_file.getvalue() if exception_file else None,
     )
     st.caption(
         f"อ่าน Preference {len(bundle.preferences):,} อาจารย์ · "
-        f"รายการสับหลีก {len(bundle.exceptions):,} รายการ · "
         "ไฟล์ถูกประมวลผลใน session นี้เท่านั้น"
     )
 
@@ -408,13 +481,6 @@ def main() -> None:
             st.session_state.schedule_result,
             st.session_state.schedule_parameters,
         )
-
-    st.markdown(
-        '<p class="small-note">SCHEDULAB ไม่มีระบบล็อกอินและไม่เรียก ChatGPT API '
-        "เหมาะสำหรับนำขึ้น Streamlit ภายในหน่วยงานภายหลัง</p>",
-        unsafe_allow_html=True,
-    )
-
 
 if __name__ == "__main__":
     main()
