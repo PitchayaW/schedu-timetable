@@ -9,7 +9,7 @@ class InputTest(unittest.TestCase):
         path = (
             Path(__file__).resolve().parents[1]
             / "sample_data"
-            / "SCHEDULAB_input_68_1.xlsx"
+            / "SchEDU_input_68_1.xlsx"
         )
         bundle = load_main_workbook(path)
         self.assertFalse(bundle.has_errors)
