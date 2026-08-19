@@ -1,7 +1,8 @@
 # SchEDU
 
 เว็บแอปจัดตารางเรียน–ตารางสอนสำหรับสาขาวิชา พัฒนาด้วย Streamlit และ
-Google OR-Tools
+Google OR-Tools 
+🔗 https://schedulab-kku-timetable.streamlit.app/
 
 ## ข้อมูลนำเข้า
 
@@ -39,18 +40,6 @@ Google OR-Tools
 ข้อมูลนี้ต้องเป็นผลที่สรุปแล้วจากการวิเคราะห์การสับหลีก เช่น
 `Stat ปี 3/SIDS ปี 3` ระบบจะใช้ข้อมูลดังกล่าวป้องกันตารางของกลุ่มเหล่านี้ชนกัน
 
-## เริ่มใช้งานบนเครื่อง
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-เปิด URL ที่ Streamlit แสดงใน Terminal แล้วใช้ข้อมูลตัวอย่างที่ฝังในแอป
-หรืออัปโหลดไฟล์ของสาขาอื่นในโครงสร้างเดียวกัน
-
 ## พารามิเตอร์ที่ปรับได้
 
 - ชั่วโมงสอนสูงสุดต่ออาจารย์ต่อวัน
@@ -61,9 +50,3 @@ streamlit run app.py
 - หลีกเลี่ยงการเรียนวิชาเดิมในวันติดกัน
 - อนุญาตให้บางคาบยังไม่ถูกจัด เพื่อให้เห็นจุดติดขัด
 - น้ำหนัก Preference ความพอดีของห้อง และโทษคาบเย็น
-
-## การนำขึ้น Streamlit
-
-นำโฟลเดอร์นี้ขึ้น Git repository โดยเก็บ `app.py`, `scheduler/`,
-`sample_data/`, `requirements.txt`, `runtime.txt` และ `.streamlit/config.toml`
-จากนั้นกำหนดไฟล์เริ่มต้นเป็น `app.py` บนบริการโฮสต์ Streamlit ที่เลือก
