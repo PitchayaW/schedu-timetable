@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from scheduler.export import schedule_excel_bytes
+from scheduler.export import schedule_excel_bytes, timetable_excel_files
 from scheduler.io import (
     CANONICAL_SHEETS,
     InputBundle,
@@ -19,6 +18,7 @@ from scheduler.time_utils import DAY_THAI, TIMES, split_items
 
 APP_DIR = Path(__file__).resolve().parent
 SAMPLE_FILE = APP_DIR / "sample_data" / "SchEDU_input_68_1.xlsx"
+EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 st.set_page_config(
     page_title="SchEDU · University Timetable",
@@ -79,7 +79,7 @@ def inject_styles() -> None:
           background: var(--accent); border-color: var(--accent); border-radius: 12px;
           min-height: 3rem; font-weight: 750;
         }
-        .stDownloadButton > button { border-radius: 12px; }
+        .stDownloadButton > button { border-radius: 12px; min-height: 2.8rem; }
         .table-wrap {
           overflow: auto; max-height: 430px; border: 1px solid var(--line);
           border-radius: 14px; background: white;
@@ -94,6 +94,11 @@ def inject_styles() -> None:
           white-space: pre-line; vertical-align: top;
         }
         .table-wrap tr:nth-child(even) td { background: #f7f6fa; }
+        .download-note {
+          padding: .8rem 1rem; margin: .45rem 0 .75rem;
+          border: 1px solid var(--line); border-radius: 12px; background: white;
+          color: var(--muted); font-size: .88rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -228,6 +233,61 @@ def entity_values(assignments: pd.DataFrame, field: str) -> list[str]:
     )
 
 
+def render_downloads(
+    bundle: InputBundle,
+    result: ScheduleResult,
+    parameters: ScheduleParameters,
+) -> None:
+    full_export = schedule_excel_bytes(bundle, result, parameters)
+    timetable_files = timetable_excel_files(bundle, result)
+
+    st.markdown("#### ดาวน์โหลดตารางสอน Excel")
+    st.markdown(
+        '<div class="download-note">'
+        "ไฟล์ตารางสอนจัดเป็นหนึ่งชีตต่ออาจารย์ หนึ่งชีตต่อกลุ่ม/ชั้นปีนักศึกษา "
+        "และหนึ่งชีตต่อห้องเรียน พร้อม merge ช่องตามระยะเวลาคาบและช่วงพักเที่ยง"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    professor_col, student_col, room_col, detail_col = st.columns(4)
+    with professor_col:
+        st.download_button(
+            "ดาวน์โหลดตารางอาจารย์",
+            data=timetable_files["professor"],
+            file_name="SchEDU_professor_timetable.xlsx",
+            mime=EXCEL_MIME,
+            type="primary",
+            width="stretch",
+        )
+    with student_col:
+        st.download_button(
+            "ดาวน์โหลดตารางนักศึกษา",
+            data=timetable_files["student"],
+            file_name="SchEDU_student_timetable.xlsx",
+            mime=EXCEL_MIME,
+            type="primary",
+            width="stretch",
+        )
+    with room_col:
+        st.download_button(
+            "ดาวน์โหลดตารางห้องเรียน",
+            data=timetable_files["room"],
+            file_name="SchEDU_room_timetable.xlsx",
+            mime=EXCEL_MIME,
+            type="primary",
+            width="stretch",
+        )
+    with detail_col:
+        st.download_button(
+            "ดาวน์โหลดผลลัพธ์แบบละเอียด",
+            data=full_export,
+            file_name="SchEDU_schedule.xlsx",
+            mime=EXCEL_MIME,
+            width="stretch",
+        )
+
+
 def render_schedule(
     bundle: InputBundle,
     result: ScheduleResult,
@@ -283,6 +343,7 @@ def render_schedule(
                     html_table(grid, show_index=True)
                 else:
                     st.info("ไม่มีข้อมูลสำหรับมุมมองนี้")
+
         with tab_rows:
             html_table(
                 result.assignments.drop(
@@ -299,6 +360,7 @@ def render_schedule(
                         }
                     )
                 )
+
         with tab_diag:
             if not result.option_summary.empty:
                 st.markdown("#### จำนวนตัวเลือกต่อคาบ")
@@ -320,15 +382,7 @@ def render_schedule(
             for message in result.diagnostics:
                 st.write(f"• {message}")
 
-    export_bytes = schedule_excel_bytes(bundle, result, parameters)
-    st.download_button(
-        "ดาวน์โหลดผลลัพธ์ Excel",
-        data=export_bytes,
-        file_name="SchEDU_schedule.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        width="stretch",
-    )
+    render_downloads(bundle, result, parameters)
 
 
 def sidebar_parameters() -> ScheduleParameters:
@@ -360,7 +414,7 @@ def sidebar_parameters() -> ScheduleParameters:
         step=0.5,
         help="เพดานชั่วโมงของรายวิชาเดียวกันที่อนุญาตให้เกิดในวันเดียว",
     )
-    st.sidebar.caption("จำกัดชั่วโมงของรายวิชาเดียวกันในวันเดียว")
+    st.sidebar.caption("จำกัดชั่วโมงของรายวิชาเดียวกันในหนึ่งวัน")
     max_courses = st.sidebar.number_input(
         "จำนวนวิชาสูงสุด / อาจารย์ / วัน",
         min_value=1,
@@ -371,6 +425,7 @@ def sidebar_parameters() -> ScheduleParameters:
     )
     st.sidebar.caption("จำกัดจำนวนรายวิชาที่ต่างกันของอาจารย์ในหนึ่งวัน")
     st.sidebar.divider()
+
     strict_zero = st.sidebar.toggle(
         "ห้ามลงช่วง Preference = 0",
         value=True,
@@ -398,6 +453,7 @@ def sidebar_parameters() -> ScheduleParameters:
         help="เวลาสูงสุดที่ OR-Tools ใช้ค้นหาคำตอบในแต่ละครั้ง",
     )
     st.sidebar.caption("เพิ่มเวลาเพื่อเปิดโอกาสให้ระบบค้นหาตารางที่ดีกว่า")
+
     with st.sidebar.expander("น้ำหนักเป้าหมายขั้นสูง"):
         preference_weight = st.number_input(
             "Preference",
@@ -420,6 +476,7 @@ def sidebar_parameters() -> ScheduleParameters:
             value=8,
             help="ค่าปรับสำหรับคาบช่วงท้ายวัน ยิ่งสูงยิ่งหลีกเลี่ยงคาบเย็น",
         )
+
     return ScheduleParameters(
         max_teaching_hours_per_day=float(max_teach),
         max_study_hours_per_day=float(max_study),
@@ -451,7 +508,10 @@ def main() -> None:
 
     upload_column, template_column = st.columns([1.8, 1])
     with upload_column:
-        st.markdown('<div class="step"><b>1</b> เลือกข้อมูล</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="step"><b>1</b> เลือกข้อมูล</div>',
+            unsafe_allow_html=True,
+        )
         main_file = st.file_uploader(
             "ไฟล์ข้อมูลหลัก (.xlsx)",
             type=["xlsx"],
@@ -461,15 +521,19 @@ def main() -> None:
             "ข้อมูลหลัก 5 ชีทสำหรับรายวิชา ผู้เรียน ห้อง และกลุ่มนักศึกษา "
             "รองรับรูปแบบเดิม teach/study/student/room เพื่อช่วยย้ายข้อมูล"
         )
+
     with template_column:
-        st.markdown('<div class="step"><b>0</b> เริ่มจากตัวอย่าง</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="step"><b>0</b> เริ่มจากตัวอย่าง</div>',
+            unsafe_allow_html=True,
+        )
         sample_bytes = SAMPLE_FILE.read_bytes() if SAMPLE_FILE.exists() else b""
         if sample_bytes:
             st.download_button(
                 "ดาวน์โหลดแม่แบบพร้อมข้อมูลตัวอย่าง",
                 data=sample_bytes,
                 file_name="SchEDU_input_template.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                mime=EXCEL_MIME,
                 width="stretch",
             )
         use_sample = st.toggle(
@@ -516,7 +580,10 @@ def main() -> None:
         "ไฟล์ถูกประมวลผลใน session นี้เท่านั้น"
     )
 
-    st.markdown('<div class="step"><b>3</b> สร้างตาราง</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="step"><b>3</b> สร้างตาราง</div>',
+        unsafe_allow_html=True,
+    )
     if st.button("จัดตารางด้วย OR-Tools", type="primary", width="stretch"):
         with st.spinner("กำลังค้นหาตารางที่เหมาะสม…"):
             st.session_state.schedule_result = run_solver_isolated(bundle, parameters)
@@ -529,6 +596,7 @@ def main() -> None:
             st.session_state.schedule_result,
             st.session_state.schedule_parameters,
         )
+
 
 if __name__ == "__main__":
     main()
